@@ -1,0 +1,11 @@
+{
+  "name": "trello-automation",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "luxon": "^3.7.2"
+  }
+}

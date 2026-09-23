@@ -1,0 +1,143 @@
+{
+  "name": "Trello Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "id": "REPLACE_WITH_BOARD_ID"
+      },
+      "id": "707912ee-741b-4625-99e2-b0bff0dd1434",
+      "name": "Trello Trigger",
+      "type": "n8n-nodes-base.trelloTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "50bcc6ba-aff2-44da-bd84-3f45756d7bad"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lọc webhook Trello: chỉ giữ các event mà ít nhất một rule quan tâm.\n// Khi thêm rule mới cần event khác (vd: chuyển list), bổ sung vào đây.\n// Lưu ý chống loop: không nhận updateCard chỉ đổi due/label/... do chính flow ghi ra.\nconst CREATE_EVENTS = [\n  'createCard',\n  'copyCard',\n  'convertToCardFromCheckItem',\n  'emailCard',\n  'moveCardToBoard',\n];\n\nconst out = [];\nfor (const item of $input.all()) {\n  const action = item.json.action;\n  const card = action?.data?.card;\n  if (!card?.id) continue;\n\n  const old = action.data.old ?? {};\n  const nameChanged = action.type === 'updateCard' && typeof old.name === 'string';\n  if (!CREATE_EVENTS.includes(action.type) && !nameChanged) continue;\n\n  out.push({\n    json: {\n      event: action.type,\n      actionId: action.id,\n      cardId: card.id,\n      oldName: nameChanged ? old.name : null,\n      by: action.memberCreator?.username ?? null,\n    },\n  });\n}\nreturn out;\n"
+      },
+      "id": "046f943a-9dc5-4afe-bb72-0ab914567d42",
+      "name": "Normalize event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.trello.com/1/cards/{{ $json.cardId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "trelloApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "fields",
+              "value": "id,name,due,dueComplete,start,idList,idBoard,idLabels,idMembers,closed"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d46c5b23-4319-417d-970a-e4fb165f51a9",
+      "name": "Get card",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Cấu hình =====\nconst TZ = 'Asia/Tokyo';\nconst DEFAULT_TIME = { hour: 9, minute: 0 }; // khi tiêu đề chỉ có ngày\nconst CLEAR_DUE_WHEN_TAG_REMOVED = false; // xoá \"@ngày\" khỏi tiêu đề thì xoá luôn due\n\n// ===== Parser \"@yyyy/m/d hh:mm\" =====\n// Hỗ trợ: @2026/8/9 13:30 · @ 2026/08/09 @ 13:30 · @2026-8-9 · @8/9 9:00 · @2026年8月9日 13時30分\n// Ký tự full-width (＠２０２６／８／９) được chuẩn hoá bằng NFKC.\nconst DATE_TAG =\n  /@\\s*(?:(\\d{4})\\s*[\\/\\-.年]\\s*)?(\\d{1,2})\\s*[\\/\\-.月]\\s*(\\d{1,2})(?!\\d)日?(?:\\s*@?\\s*(\\d{1,2})\\s*[:時]\\s*(\\d{2})(?!\\d)分?)?/g;\n\nfunction parseDue(title, now) {\n  if (!title) return null;\n  const text = title.normalize('NFKC');\n  let result = null;\n  for (const m of text.matchAll(DATE_TAG)) {\n    const [, y, mo, d, h, mi] = m;\n    const hasTime = h !== undefined;\n    const parts = {\n      month: +mo,\n      day: +d,\n      hour: hasTime ? +h : DEFAULT_TIME.hour,\n      minute: hasTime ? +mi : DEFAULT_TIME.minute,\n    };\n    let dt = DateTime.fromObject({ year: y ? +y : now.year, ...parts }, { zone: TZ });\n    // Không ghi năm và ngày đã qua -> hiểu là năm sau\n    if (!y && dt.isValid && dt < now.startOf('day')) dt = dt.plus({ years: 1 });\n    // Luxon không báo lỗi với 24:00 nên tự kiểm tra\n    if (dt.isValid && parts.hour < 24 && parts.minute < 60) result = dt; // lấy tag hợp lệ cuối cùng\n  }\n  return result;\n}\n\n// ===== Rules =====\n// Mỗi rule nhận { card, event, now } và trả về mảng action Trello API:\n// { method, path, body, rule }. Thêm rule mới = viết hàm mới rồi thêm vào RULES.\n\nfunction dueFromTitle({ card, event, now }) {\n  const due = parseDue(card.name, now);\n  if (due) {\n    const current = card.due ? DateTime.fromISO(card.due).toMillis() : null;\n    if (current === due.toMillis()) return [];\n    return [\n      {\n        rule: 'due-from-title',\n        method: 'PUT',\n        path: `cards/${card.id}`,\n        body: { due: due.toUTC().toISO() },\n      },\n    ];\n  }\n  if (CLEAR_DUE_WHEN_TAG_REMOVED && card.due && parseDue(event.oldName, now)) {\n    return [{ rule: 'due-from-title', method: 'PUT', path: `cards/${card.id}`, body: { due: null } }];\n  }\n  return [];\n}\n\nconst RULES = [dueFromTitle];\n\n// ===== Engine =====\nconst now = DateTime.now().setZone(TZ);\nconst out = [];\n$input.all().forEach((item, i) => {\n  const card = item.json;\n  const event = $('Normalize event').itemMatching(i).json;\n  for (const rule of RULES) {\n    for (const action of rule({ card, event, now })) {\n      out.push({ json: { ...action, cardId: card.id, cardName: card.name } });\n    }\n  }\n});\nreturn out;\n"
+      },
+      "id": "74ea67ed-46aa-4681-bb0e-7456732b584c",
+      "name": "Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "=https://api.trello.com/1/{{ $json.path }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "trelloApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body ?? {}) }}",
+        "options": {}
+      },
+      "id": "778e6b8f-5f8d-4acb-9f21-69bcd46a15cd",
+      "name": "Apply action",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Trello Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize event": {
+      "main": [
+        [
+          {
+            "node": "Get card",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get card": {
+      "main": [
+        [
+          {
+            "node": "Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules": {
+      "main": [
+        [
+          {
+            "node": "Apply action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Tokyo",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "pinData": {}
+}

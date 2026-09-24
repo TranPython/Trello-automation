@@ -52,12 +52,15 @@ Tiêu đề không có tag thì due hiện có vẫn được giữ nguyên, nê
 
 ## Cài đặt
 
+> Hướng dẫn chi tiết tạo credential và cấu hình Cloudflare Access/Tunnel để Trello gọi được webhook:
+> **[docs/setup-trello-cloudflare.md](docs/setup-trello-cloudflare.md)**
+
 ### 1. Yêu cầu
-- n8n có **URL HTTPS mà Trello gọi tới được** (biến `WEBHOOK_URL` phải là URL public). Nếu n8n ở mạng nội bộ, dùng Cloudflare Tunnel hoặc reverse proxy.
-- Trello API key + token: https://trello.com/power-ups/admin → tạo Power-Up/API key → generate token.
+- n8n có **URL HTTPS mà Trello gọi tới được**, và `WEBHOOK_URL` là URL public đó. Nếu n8n đứng sau Cloudflare Access, bypass đúng path webhook cho IP Trello (xem doc trên).
+- Trello API key, Secret, Token.
 
 ### 2. Tạo credential trong n8n
-*Credentials → New → Trello API*
+*Credentials → New → **Trello API*** (không dùng OAuth1)
 
 | Field | Giá trị |
 |---|---|

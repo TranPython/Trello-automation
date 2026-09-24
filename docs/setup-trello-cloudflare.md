@@ -10,7 +10,18 @@
 Không dùng được Service Token hay custom header: Trello không cho cấu hình header cho webhook, chỉ gửi header chữ ký `X-Trello-Webhook`.
 **Không cần WAF custom rule.** Chỉ cần kiểm tra **Bot Fight Mode** (xem mục 4).
 
-Về "OAuth ở cả 2 phía": Trello dùng **OAuth 1.0a**, không phải OAuth2. Trên n8n có 2 loại credential là *Trello API* và *Trello OAuth1 API*. Nên dùng **Trello API**, vì OAuth1 cần redirect callback về n8n, phức tạp hơn mà không có lợi gì thêm cho automation cá nhân. Các ô *Allowed origins* trên trang API key của Trello chỉ dùng cho flow authorize bằng redirect, nên bỏ trống cũng được khi tạo token bằng link thủ công ở bước 1.3.
+### Chọn cách xác thực: API key + token (không dùng OAuth 2.0)
+
+Trello hiện có 3 cơ chế: **API key + token**, **OAuth 1.0a**, và **OAuth 2.0 (3LO)** mới ra mắt (token có hạn, phải refresh; scope chi tiết hơn). Atlassian chưa công bố lịch ngừng hỗ trợ API key/token.
+
+Phía n8n (kiểm tra source bản master, 2026-09): node Trello và Trello Trigger **chỉ hỗ trợ `Trello API` (key + token) và `Trello OAuth1 API`**, chưa có credential OAuth2 cho Trello. Muốn dùng OAuth2 thì phải:
+- dùng credential *Generic OAuth2* với HTTP Request cho mọi call;
+- bỏ node Trello Trigger, tự đăng ký webhook, dùng node Webhook thường và tự viết bước verify chữ ký;
+- tự lo trường hợp access token hết hạn và refresh token xoay vòng.
+
+Làm vậy tốn công hơn nhiều mà automation cá nhân không được lợi gì đáng kể, nên doc này dùng **Trello API (key + token)**. Nên chuyển sang OAuth2 khi n8n có credential Trello OAuth2 chính thức, hoặc khi Atlassian công bố lịch deprecate API token.
+
+Cả OAuth1 lẫn OAuth2 đều không bị Cloudflare Access cản: redirect callback đi qua trình duyệt của bạn, mà trình duyệt đã login Access. Thứ Access thực sự cản là **webhook** (mục 4). Các ô *Allowed origins* trên trang API key chỉ dùng cho flow authorize bằng redirect, nên có thể bỏ trống khi tạo token bằng link thủ công ở bước 1.3.
 
 ---
 

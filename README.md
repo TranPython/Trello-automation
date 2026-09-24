@@ -60,7 +60,7 @@ Tiêu đề không có tag thì due hiện có vẫn được giữ nguyên, nê
 - Trello API key, Secret, Token.
 
 ### 2. Tạo credential trong n8n
-*Credentials → New → **Trello API*** (không dùng OAuth1)
+*Credentials → New → **Trello API*** (không dùng OAuth1/OAuth2, lý do xem doc bên dưới)
 
 | Field | Giá trị |
 |---|---|

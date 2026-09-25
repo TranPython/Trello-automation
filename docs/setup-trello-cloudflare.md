@@ -109,9 +109,11 @@ Kết quả:
 > - **Chặt**: giữ policy IP như trên và làm rule #15 (monitor webhook) để phát hiện sớm.
 > - **Thoáng**: đổi Include thành **Everyone**. Chữ ký HMAC cùng `webhookId` (UUID khó đoán) đã đủ chống giả mạo. Trade-off là n8n sẽ nhận request rác tới path đó (bị 401).
 >
-> **Kết quả thực tế (2026-09-25)**: với policy chỉ cho `104.192.142.240/28`, request HEAD kiểm tra của Trello lúc tạo webhook vẫn bị Access trả **403** (`did not return 200 status code, got 403`). Vậy trình kiểm tra của Trello không gọi từ dải IP đã công bố. **Hãy dùng Thoáng (Include: Everyone)** cho path webhook, và bắt buộc điền OAuth Secret trong credential để n8n kiểm tra chữ ký.
+> **Kết quả thực tế (2026-09-25, từ Firewall events)**: Trello gọi webhook từ cả IPv4 `104.192.142.240/28` **và IPv6 `2401:1d80:321c::/48`** (thấy các địa chỉ `2401:1d80:321c:3::`, `:4::`, `:5::`). Policy chỉ có dải IPv4 sẽ chặn các request đi bằng IPv6. Nếu giữ cách **Chặt**, Include phải có **cả hai dải**.
 
 ### 4.2 Bot Fight Mode
+
+> **Đã xác nhận (2026-09-25)**: toàn bộ request HEAD/POST của Trello (User-Agent `Trello`, ASN 14618 Amazon) bị `source: botFight`, `action: managed_challenge`, nên Trello nhận **403** và không tạo được webhook. Trên bản Free **bắt buộc tắt Bot Fight Mode** (không skip được), hoặc đưa webhook sang một zone khác.
 
 Trello không nằm trong danh sách verified bot của Cloudflare. Nếu zone bật **Bot Fight Mode** (bản Free), webhook POST có thể bị challenge, và **không có cách skip** bằng WAF custom rule hay Access Bypass, vì Bot Fight Mode chạy ngoài Ruleset Engine.
 

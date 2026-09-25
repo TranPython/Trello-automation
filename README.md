@@ -216,26 +216,18 @@ Trên bản Free, Bot Fight Mode không cho tạo ngoại lệ theo path, nên �
 - **Rate limit Trello**: 100 request / 10 giây mỗi token. Mỗi event hợp lệ tốn 1–2 request, dư sức cho quy mô cá nhân/nhóm nhỏ.
 - **Múi giờ**: parse theo `TZ` trong node Rules (Asia/Tokyo), không phụ thuộc timezone của server n8n.
 
-## Gợi ý các rule tiếp theo
+## Gợi ý tiếp theo
 
-Mức ưu tiên dựa trên giá trị thực tế / công sức cho board cá nhân và nhóm nhỏ.
+**Đã làm** (xem [Bộ rule](#bộ-rule)): Done ↔ complete, nhắc hạn, label quá hạn, giám sát webhook, sort.
 
-| # | Rule | Trigger | Công sức | Ưu tiên |
-|---|---|---|---|---|
-| 1 | **Chuyển vào list "Done" → `dueComplete=true`**; kéo ra khỏi Done → `false` | `updateCard` có `listAfter` | Thấp | ⭐⭐⭐ |
-| 2 | **Nhắc trước due** (24h / 1h) qua Teams, LINE, email hoặc push | Schedule mỗi 15 phút | Thấp | ⭐⭐⭐ |
-| 3 | **Digest buổi sáng**: card due hôm nay/ngày mai/quá hạn | Schedule 08:00 | Thấp | ⭐⭐⭐ |
-| 4 | **Đánh dấu quá hạn**: gắn label "Overdue" hoặc chuyển sang list riêng | Schedule | Thấp | ⭐⭐ |
-| 5 | **Ngày tương đối** trong tiêu đề: `@tomorrow 10:00`, `@+3d`, `@mon 9:00`, `@金 15:00`, `@明日` | như rule hiện tại | Trung bình | ⭐⭐ |
-| 6 | **Khoảng ngày** `@2026/8/1~8/9` → set `start` + `due` | như rule hiện tại | Thấp | ⭐⭐ |
-| 7 | **Tag → label / member**: `#urgent`, `[VNK]`, `+thomas` trong tiêu đề → gắn label/member (có thể xoá tag khỏi tiêu đề) | create/đổi tên | Thấp | ⭐⭐ |
-| 8 | **Checklist template**: card vào list X hoặc tiêu đề có prefix Y → thêm checklist mẫu | createCard / chuyển list | Thấp | ⭐⭐ |
-| 9 | **Card lặp lại**: `@every mon 9:00` → khi hoàn thành thì tạo card kỳ sau (hoặc Schedule tạo sẵn) | `dueComplete` / Schedule | Trung bình | ⭐⭐ |
-| 10 | **Tick hoàn thành → tự chuyển sang Done** (ngược với #1, cần chống loop giữa 2 rule) | `updateCard` có `old.dueComplete` | Thấp | ⭐ |
-| 11 | **Dọn dẹp**: archive card trong Done quá N ngày | Schedule hằng tuần | Thấp | ⭐ |
-| 12 | **Lệnh qua comment**: comment `/due 8/9 13:30`, `/move Doing`, `/assign me` | `commentCard` | Trung bình | ⭐ |
-| 13 | **Đồng bộ lịch**: card có due → tạo/cập nhật event Outlook (Microsoft Graph) hoặc Google Calendar | due thay đổi | Cao (xử lý update/delete) | ⭐ |
-| 14 | **AI (Dify/LLM)**: sinh checklist từ description, phân loại label, tóm tắt board hằng tuần | createCard / Schedule | Trung bình | ⭐ |
-| 15 | ✅ **Giám sát webhook** (đã làm, xem trên): báo khi webhook Trello bị disable | Schedule hằng ngày | Thấp | ⭐⭐ (nên có) |
-
-**Đề xuất làm tiếp:** #1 + #2/#3 + #15. #1 chỉ là thêm 1 hàm vào node Rules. #2/#3 là lý do chính để có due date. #15 giúp phát hiện sớm khi automation ngừng chạy. Nếu board có nhiều người dùng chung thì ưu tiên #7 và #8 hơn #2/#3.
+| # | Gợi ý | Lý do | Công sức |
+|---|---|---|---|
+| 1 | **Đặt tên cho 3 label** trong Trello: 🟩 `2 ngày`, 🟧 `Ngày mai`, 🟥 `Hôm nay/Quá hạn` | Nhìn là hiểu ngay; engine dùng ID nên đổi tên không ảnh hưởng | 1 phút, làm tay |
+| 2 | **Chuyển nhắc hạn sang Telegram** | Push nhanh hơn email. Đã có credential `Telegram account`, chỉ cần chat ID | Thấp: thay node `Send reminder` |
+| 3 | **Backfill 1 lần**: card có `@ngày` trong tiêu đề nhưng due trống hoặc lệch (ví dụ "piano giáng sinh @ 2026/12/12") | Card tạo trước khi có automation | Thấp |
+| 4 | **Dọn Done**: 34 card chưa complete (dữ liệu cũ) | Rule chỉ chạy khi card được *thêm vào* Done | Thấp, 1 lần |
+| 5 | **Sort ngay khi due đổi** (không chờ 00:00) | Card mới có due gần sẽ nằm cuối list tới đêm | Trung bình |
+| 6 | **Card lặp lại** từ 繰り返し: `@every mon 9:00` → mỗi kỳ copy sang To-do với due tương ứng | 繰り返し hiện chỉ là list mẫu | Trung bình |
+| 7 | **Digest sáng 07:00**: card hôm nay + quá hạn trong 1 email/Telegram | Bổ sung cho nhắc theo từng mốc | Thấp: thêm 1 `NOTIFY_RULES` |
+| 8 | **Ngày tương đối**: `@tomorrow 10:00`, `@+3d`, `@金 15:00`, `@明日` | Gõ nhanh trên điện thoại | Trung bình: mở rộng `parseTitleDue` |
+| 9 | **Archive Done cũ** > 90 ngày | Done đang có 349 card | Thấp: thêm `BOARD_RULES` |

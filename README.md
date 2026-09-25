@@ -153,6 +153,8 @@ Schedule (6h) → Build canary → PUT tên card canary "… @<+30 ngày, giờ 
 - Lỗi runtime của `Trello automation` (ví dụ Trello API trả 4xx/5xx) cũng gửi email qua `Error Notify`.
 - Đã test 2026-09-25: nhánh thành công ✅; tạm tắt workflow chính → monitor lỗi → Error Notify gửi email ✅.
 
+Sau khi publish lại `Trello automation`, Trello cần vài giây để tạo lại webhook. Event xảy ra trong khoảng đó sẽ bị mất: lần test ngày 2026-09-25, chạy canary ngay sau khi publish thì báo lỗi, chạy lại 1 phút sau thì đạt. Vì vậy sau mỗi lần publish, hãy chờ khoảng 1 phút rồi mới kiểm tra.
+
 Error workflow chỉ chạy với execution **production** (theo lịch hoặc webhook), không chạy khi bấm *Execute workflow* thủ công.
 
 ## Bảo mật zone sau khi tắt Bot Fight Mode

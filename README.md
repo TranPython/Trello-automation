@@ -1,8 +1,8 @@
 # Trello Automation (n8n)
 
-Dùng n8n thay cho Butler của Trello (bản Free hết quota chạy tự động).
-Rule đầu tiên: khi card được **tạo** hoặc **đổi tiêu đề**, đọc ngày giờ trong
-tiêu đề rồi set **due date**.
+Dùng n8n thay cho Butler của Trello (bản Free hết quota chạy tự động) cho board **Honeys**.
+Một workflow duy nhất chạy toàn bộ bộ rule: set due từ tiêu đề, due mặc định, label theo hạn,
+Done/complete, 繰り返し, sort hằng ngày và email nhắc hạn.
 
 ```
 Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
@@ -12,30 +12,81 @@ Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
 
 | Mục | Giá trị |
 |---|---|
-| n8n workflow | `Trello automation` (`6HoYhAFzL3s1yYNA`), **active** |
+| n8n workflow | `Trello automation` (`6HoYhAFzL3s1yYNA`), **active**: webhook Trello + lịch mỗi 15 phút |
 | Board | Honeys (`637ef8eeeb1d9a045fdcf98b`) |
 | Webhook | `https://n8n.lanchala.org/webhook/d576bd61-1e19-499d-948c-e51694f2b665/webhook` |
 | Cloudflare | Access app bypass cho path webhook, chỉ IP Trello `104.192.142.240/28` + `2401:1d80:321c::/48`; **Bot Fight Mode: OFF** (bắt buộc, xem [docs](docs/setup-trello-cloudflare.md)) |
+| Nhắc hạn | Gmail (`Gmail account`) → `tranvanthong.hd@gmail.com` |
 | Báo lỗi | Cả 2 workflow đặt *Error workflow* = `Error Notify` (`BkcgU3Acs08Akk0T`, gửi email) |
 | Giám sát | `Trello webhook monitor` (`VO5Hl6x03Om7fzyS`), **active**, chạy mỗi 6 giờ (phút :17): canary E2E, xem mục [Giám sát](#giám-sát-webhook-canary) |
-| Kiểm thử E2E (2026-09-25) | Tạo card `@2026/12/1 10:00` → due 10:00 JST ✅ · Đổi tên `@ 2026/12/02 @ 15:45` → due 15:45 JST ✅ · Event do flow tự ghi bị lọc (không loop) ✅ · POST không chữ ký → 401 ✅ |
+
+## Bộ rule
+
+Tổng hợp từ rule Butler cũ và rule "@ngày" trong tiêu đề, chỉnh lại để không xung đột với cách board đang được dùng.
+
+**Nhóm list** (cấu hình ở đầu node `Engine` / [`src/engine.js`](src/engine.js)):
+
+| Nhóm | List | Ý nghĩa |
+|---|---|---|
+| `TASK_LISTS` | To-do, Toyo, VNK | List công việc: due mặc định, complete → Done, sort hằng ngày |
+| `PASSIVE_LISTS` | Done, 繰り返し | Không gắn label hạn, không nhắc hạn |
+| còn lại | JP new words, AI資格ロードマップ, Learn | Có label hạn + nhắc hạn, **không** bị di chuyển hay sort |
+
+**Rule theo event** (chạy khi có webhook, theo thứ tự ưu tiên):
+
+| # | Rule | Khi nào | Làm gì |
+|---|---|---|---|
+| 1 | `recurring-reset` | Card vào (hoặc được tạo trong) **繰り返し** | Xoá due + xoá **tất cả** label |
+| 2 | `due-from-title` | Tạo card / đổi tên, có `@ngày giờ` (trừ 繰り返し) | Set due theo tiêu đề |
+| 3 | `default-due` | Tạo card trong list công việc, chưa có due | Due = **+3 ngày 09:00** |
+| 4 | `complete-to-done` | Đánh dấu complete trong list công việc | Chuyển lên **đầu Done** |
+| 5 | `done-marks-complete` | Card vào (hoặc được tạo trong) **Done** | Mark complete |
+| 6 | `reopen-on-leave-done` *(mới)* | Kéo card ra khỏi Done | Bỏ complete |
+| 7 | `urgency-labels` | **Mọi** event + mỗi 15 phút | Label theo số ngày lịch còn lại (bên dưới) |
+
+**Label hạn** (`urgency-labels`, tính theo ngày lịch JST, automation quản lý hoàn toàn 3 màu này):
+
+| Còn lại | Label |
+|---|---|
+| ≥ 3 ngày / không có due / complete / ở Done, 繰り返し | không có |
+| 2 ngày | 🟩 green |
+| 1 ngày | 🟧 orange |
+| hôm nay hoặc quá hạn | 🟥 red |
+
+**Rule theo lịch** (trigger `Every 15 min`):
+
+| Rule | Khi nào | Làm gì |
+|---|---|---|
+| `daily-sort` | Tick 00:00–00:14 | Sort To-do / Toyo / VNK: due tăng dần → không due → đã complete. Card hôm nay/quá hạn tự lên đầu |
+| `due-reminders` | Mỗi tick | Email nhắc **2 ngày / 1 ngày / 1 giờ** trước due, gộp 1 email mỗi tick |
+
+### Xử lý xung đột so với rule gốc
+
+| Rule gốc | Vấn đề | Cách xử lý |
+|---|---|---|
+| "when a due date is set → remove red/orange/green" | Gỡ hết label rồi chờ tới đêm mới gắn lại → sai trạng thái trong ngày | Thay bằng tính lại label **ngay** theo due mới (rule 7) |
+| 3 rule "2 ngày / 1 ngày / hôm nay" chạy theo lịch | Trùng việc với rule trên, dễ lệch nhau | Gộp thành 1 hàm trạng thái `urgency-labels`, dùng chung cho event và lịch |
+| "on the day due → move to top of the list" | Với To-do/Toyo/VNK thì sort đã làm việc này; với AI roadmap/Learn thì phá thứ tự roadmap | Chỉ thực hiện qua `daily-sort` (card hôm nay/quá hạn luôn đứng đầu); không di chuyển list khác |
+| "marked complete → move to Done" | List Learn có 12/14 card complete mà bạn cố ý giữ lại | Chỉ áp dụng cho To-do/Toyo/VNK |
+| "complete → Done" + "added to Done → complete" | Hai rule kích hoạt lẫn nhau | Engine idempotent: event do flow tự ghi ra không tạo thay đổi mới |
+| "繰り返し → remove due" + rule "@ngày" | Đổi tên card 繰り返し có `@ngày` sẽ set lại due | `due-from-title` bỏ qua 繰り返し |
+| "default due in 3 days" | Card mới trong JP new words / Learn / 繰り返し không cần due; card copy đã có due | Chỉ áp dụng khi **tạo** card trong To-do/Toyo/VNK và **chưa có** due; tag `@ngày` được ưu tiên |
+| "set reminder 2d/1d/1h" | Trello chỉ có **1** reminder/card và chỉ gửi cho *member* của card (board này hầu như không gán member); comment tự mention bản thân thì không có thông báo | Gửi email qua Gmail, gộp theo tick 15 phút; mỗi mốc thuộc đúng 1 tick nên không gửi trùng |
 
 ## Kiến trúc
 
 ```
-Trello Trigger ─► Normalize event ─► Get card ─► Rules ─► Apply action
- (webhook board)   (lọc event)       (GET API)   (Code)    (Trello API)
+Trello Trigger → Normalize event → Get card → Event context ─┐
+                                                             ├→ Engine → Route ─┬→ Apply to Trello (PUT, 5 req/s)
+Every 15 min  → Get board cards → Tick context ──────────────┘                  └→ Send reminder (Gmail)
 ```
 
-| Node | Việc |
-|---|---|
-| **Trello Trigger** | n8n tự đăng ký webhook Trello cho board lúc activate, tự trả lời HEAD verify |
-| **Normalize event** | Chỉ giữ `createCard`, `copyCard`, `convertToCardFromCheckItem`, `emailCard`, `moveCardToBoard`, và `updateCard` **có đổi tên**. Các event còn lại (comment, đổi due, label...) bị bỏ, nên thay đổi do chính flow ghi ra không kích hoạt lại flow (không bị loop) |
-| **Get card** | Đọc trạng thái hiện tại của card từ API, không tin payload webhook. Rule có đủ dữ liệu (`due`, `idList`, `idLabels`...) |
-| **Rules** | Mỗi rule là 1 hàm JS nhận `{ card, event, now }`, trả về list action. Thêm rule = thêm hàm |
-| **Apply action** | 1 HTTP node chung chạy mọi action `{ method, path, body }` lên `https://api.trello.com/1/` |
-
-Nhờ vậy, thêm rule mới thường chỉ cần sửa node **Rules** (và thêm event vào **Normalize event** nếu rule cần event khác), không phải nối thêm node.
+- **Engine** là một Code node chứa CONFIG + 3 loại rule:
+  - `CARD_RULES`: mỗi rule `{ id, when(ctx, state), apply(ctx, state) }`, sửa *trạng thái mong muốn* của card.
+  - `BOARD_RULES`: chạy trên toàn board (ví dụ sort).
+  - `NOTIFY_RULES`: sinh thông báo.
+- Rule **không gọi API**. Engine so trạng thái mong muốn với card thật và sinh **1 lệnh PUT** cho phần khác biệt. Nhờ vậy các rule không ghi đè nhau, chạy lại bao nhiêu lần kết quả vẫn như nhau, và event do flow tự ghi ra không gây loop.
+- Mã nguồn nằm trong [`src/`](src/); `npm run build` sinh [`workflows/trello-automation.json`](workflows/trello-automation.json).
 
 ## Định dạng tiêu đề được hỗ trợ
 
@@ -51,16 +102,7 @@ Nhờ vậy, thêm rule mới thường chỉ cần sửa node **Rules** (và th
 | `dời @2026/8/1 -> @2026/8/5 15:00` | lấy tag hợp lệ **cuối cùng**: 2026/08/05 15:00 |
 | `@2026/2/30`, `@2026/8/9 25:00`, `a@b.com` | bỏ qua, không đổi due |
 
-Cấu hình ở đầu node **Rules**:
-
-```js
-const TZ = 'Asia/Tokyo';
-const DEFAULT_TIME = { hour: 9, minute: 0 };   // khi chỉ có ngày
-const CLEAR_DUE_WHEN_TAG_REMOVED = false;      // true: xoá "@ngày" khỏi tiêu đề thì xoá luôn due
-```
-
-Nếu due hiện tại đã đúng giá trị parse được thì flow không gọi API.
-Tiêu đề không có tag thì due hiện có vẫn được giữ nguyên, nên card set due bằng tay không bị ảnh hưởng.
+Tag chỉ được đọc khi **tạo** hoặc **đổi tên** card, nên due chỉnh tay sau đó không bị ghi đè.
 
 ## Cài đặt
 
@@ -91,7 +133,7 @@ curl -s "https://api.trello.com/1/boards/AbCd1234?fields=id,name&key=$TRELLO_KEY
 ### 4. Import workflow
 1. n8n → *Workflows → Import from File* → chọn [`workflows/trello-automation.json`](workflows/trello-automation.json)
 2. Node **Trello Trigger**: điền Board ID vào `Model ID`, chọn credential
-3. Node **Get card** và **Apply action**: chọn cùng credential Trello
+3. Các node **Get card**, **Get board cards**, **Apply to Trello**: chọn cùng credential Trello; **Send reminder**: chọn credential Gmail
 4. **Activate** workflow. Lúc này n8n đăng ký webhook với Trello
 
 Kiểm tra webhook đã được đăng ký:
@@ -104,39 +146,39 @@ curl -s "https://api.trello.com/1/tokens/$TRELLO_TOKEN/webhooks?key=$TRELLO_KEY"
 Tạo card `Test @2026/12/1 10:00` → due chuyển thành 2026/12/01 10:00 sau vài giây. Sửa tiêu đề thành `@2026/12/2 11:00` → due đổi theo.
 
 ### Nhiều board
-Thêm một node **Trello Trigger** cho mỗi board, nối tất cả vào **Normalize event**. Không cần sửa gì thêm.
+Thêm một node **Trello Trigger** cho mỗi board, nối vào **Normalize event**. Sau đó thêm list/label ID của board mới vào CONFIG.
 
-## Thêm rule mới
+## Thay đổi / thêm rule
 
-Trong node **Rules**:
+1. Sửa [`src/engine.js`](src/engine.js). Ví dụ, muốn card có `!!` trong tiêu đề được gắn label vàng:
 
-```js
-// Ví dụ: tiêu đề có "!!" -> gắn label khẩn cấp
-const URGENT_LABEL_ID = 'xxxxxxxxxxxxxxxxxxxxxxxx';
-function urgentLabel({ card }) {
-  if (!card.name.includes('!!') || card.idLabels.includes(URGENT_LABEL_ID)) return [];
-  return [{ rule: 'urgent-label', method: 'POST', path: `cards/${card.id}/idLabels`, body: { value: URGENT_LABEL_ID } }];
-}
+   ```js
+   // thêm vào CARD_RULES, trước 'urgency-labels'
+   {
+     id: 'bang-bang-yellow',
+     when: (ctx) => !!ctx.event && (ctx.event.created || ctx.event.nameChanged),
+     apply: (ctx, s) => { if (ctx.card.name.includes('!!')) s.labels.add('637ef8f0e86863027e7b9acb'); },
+   },
+   ```
 
-const RULES = [dueFromTitle, urgentLabel];
-```
+   - Đổi phạm vi list: sửa `TASK_LISTS`, `SORTED_LISTS`, `PASSIVE_LISTS`.
+   - Đổi mốc nhắc: sửa `CFG.REMINDERS`. Đổi due mặc định: sửa `CFG.DEFAULT_DUE`.
+   - Rule cần event mới (ví dụ đổi member): thêm field vào `WATCHED_FIELDS` trong [`src/normalize.js`](src/normalize.js).
+2. Viết test trong [`tests/engine.test.js`](tests/engine.test.js), rồi chạy `npm test`.
+3. Chạy `npm run build`, rồi dán code vào node tương ứng trên n8n (hoặc nhờ Claude deploy qua n8n MCP). Nhớ **Publish**.
+4. Sau khi publish, chờ khoảng 1 phút để Trello đăng ký lại webhook.
 
-Nguyên tắc:
-- **Idempotent**: kiểm tra trạng thái hiện tại trước khi trả về action (như `dueFromTitle` so sánh due cũ và mới).
-- **Chống loop**: nếu rule phản ứng với event mà chính nó tạo ra (vd: rule "move card" phản ứng với `updateCard` có `old.idList`), phải có điều kiện dừng rõ ràng.
-- Rule cần event mới (vd: chuyển list) → thêm điều kiện vào **Normalize event**, và nếu cần thì đưa thêm trường từ `action.data` (vd: `listAfter`) vào output.
-- Rule chạy theo lịch (overdue, digest) → tạo workflow riêng với **Schedule Trigger**, tái sử dụng node **Apply action**.
+Nguyên tắc để không phá vỡ tính idempotent:
+- `apply` chỉ sửa `state` (`due`, `dueComplete`, `idList`, `pos`, `labels`), không gọi API.
+- Rule chỉ nên chạy một lần tại thời điểm xảy ra chuyện (ví dụ "khi tạo card") thì phải kiểm tra `ctx.event.*` trong `when`. Rule dạng trạng thái (ví dụ label) thì cho chạy luôn.
 
 ## Test
 
-Test chạy trực tiếp code của 2 Code node trong workflow JSON, mock runtime của n8n và cố định thời gian hiện tại:
-
 ```bash
 npm install
-npm test
+npm test        # 25 test: từng rule, xung đột, chống loop, idempotent, sort, nhắc hạn
+npm run build   # src/*.js -> workflows/trello-automation.json
 ```
-
-Sau khi sửa workflow trong n8n UI: *Download* → ghi đè `workflows/trello-automation.json` → `npm test` → commit.
 
 ## Giám sát webhook (canary)
 

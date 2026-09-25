@@ -15,7 +15,9 @@ Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
 | n8n workflow | `Trello automation` (`6HoYhAFzL3s1yYNA`), **active** |
 | Board | Honeys (`637ef8eeeb1d9a045fdcf98b`) |
 | Webhook | `https://n8n.lanchala.org/webhook/d576bd61-1e19-499d-948c-e51694f2b665/webhook` |
-| Cloudflare | Access app bypass (Everyone) cho path webhook; **Bot Fight Mode: OFF** (bắt buộc, xem [docs](docs/setup-trello-cloudflare.md)) |
+| Cloudflare | Access app bypass cho path webhook, chỉ IP Trello `104.192.142.240/28` + `2401:1d80:321c::/48`; **Bot Fight Mode: OFF** (bắt buộc, xem [docs](docs/setup-trello-cloudflare.md)) |
+| Báo lỗi | Cả 2 workflow đặt *Error workflow* = `Error Notify` (`BkcgU3Acs08Akk0T`, gửi email) |
+| Giám sát | `Trello webhook monitor` (`VO5Hl6x03Om7fzyS`), **active**, chạy mỗi 6 giờ (phút :17): canary E2E, xem mục [Giám sát](#giám-sát-webhook-canary) |
 | Kiểm thử E2E (2026-09-25) | Tạo card `@2026/12/1 10:00` → due 10:00 JST ✅ · Đổi tên `@ 2026/12/02 @ 15:45` → due 15:45 JST ✅ · Event do flow tự ghi bị lọc (không loop) ✅ · POST không chữ ký → 401 ✅ |
 
 ## Kiến trúc
@@ -136,6 +138,38 @@ npm test
 
 Sau khi sửa workflow trong n8n UI: *Download* → ghi đè `workflows/trello-automation.json` → `npm test` → commit.
 
+## Giám sát webhook (canary)
+
+Chỉ kiểm tra HEAD tới webhook là không đủ. Lỗi hay gặp nhất (Cloudflare chặn Trello, Trello disable webhook, n8n báo active nhưng Trigger không đăng ký được) chỉ phát hiện được bằng cách kiểm tra **end-to-end**.
+
+Workflow `Trello webhook monitor`:
+
+```
+Schedule (6h) → Build canary → PUT tên card canary "… @<+30 ngày, giờ hiện tại>" → Wait 60s → GET card → Check due
+```
+
+- Card canary: `[n8n canary] webhook monitor – đừng xoá/archive` ở list **Passed Task** (board Honeys, id `6ab672a12485df8dbec08e6e`). **Đừng xoá hoặc archive card này.**
+- Nếu due không khớp, hoặc card đã bị archive, node `Check due` throw lỗi. Workflow lỗi thì `Error Notify` gửi email kèm hướng xử lý.
+- Lỗi runtime của `Trello automation` (ví dụ Trello API trả 4xx/5xx) cũng gửi email qua `Error Notify`.
+- Đã test 2026-09-25: nhánh thành công ✅; tạm tắt workflow chính → monitor lỗi → Error Notify gửi email ✅.
+
+Error workflow chỉ chạy với execution **production** (theo lịch hoặc webhook), không chạy khi bấm *Execute workflow* thủ công.
+
+## Bảo mật zone sau khi tắt Bot Fight Mode
+
+Trên bản Free, Bot Fight Mode không skip được theo path, nên đã phải tắt cho cả zone. Bù lại bằng:
+
+1. **Block AI bots**: *Security → Settings → Bot traffic → Block AI bots → Block on all pages*. Tính năng này chạy trên Ruleset Engine, không ảnh hưởng Trello.
+2. **Rate limiting rule** (bản Free được 1 rule): *Security → Security rules → Create rule → Rate limiting rules → Edit expression*
+
+   ```
+   (http.host ne "n8n.lanchala.org") or (http.host eq "n8n.lanchala.org" and not starts_with(http.request.uri.path, "/webhook/"))
+   ```
+
+   Characteristics: IP · 100 requests / 10 seconds · Action: Block · Duration: 10 seconds.
+3. Giữ nguyên Managed rules và Access cho các hostname khác.
+4. Đừng bật lại Bot Fight Mode, và đừng bật Browser Integrity Check cho path webhook: cả hai đều challenge Trello.
+
 ## Vận hành
 
 - **Webhook bị Trello tắt**: nếu callback lỗi liên tục (n8n down, URL đổi), Trello sẽ disable webhook. Deactivate rồi activate lại workflow để n8n đăng ký lại. Nên có 1 workflow Schedule kiểm tra `GET /tokens/{token}/webhooks` và báo khi `active: false`.
@@ -163,6 +197,6 @@ Mức ưu tiên dựa trên giá trị thực tế / công sức cho board cá n
 | 12 | **Lệnh qua comment**: comment `/due 8/9 13:30`, `/move Doing`, `/assign me` | `commentCard` | Trung bình | ⭐ |
 | 13 | **Đồng bộ lịch**: card có due → tạo/cập nhật event Outlook (Microsoft Graph) hoặc Google Calendar | due thay đổi | Cao (xử lý update/delete) | ⭐ |
 | 14 | **AI (Dify/LLM)**: sinh checklist từ description, phân loại label, tóm tắt board hằng tuần | createCard / Schedule | Trung bình | ⭐ |
-| 15 | **Giám sát webhook**: báo khi webhook Trello bị disable | Schedule hằng ngày | Thấp | ⭐⭐ (nên có) |
+| 15 | ✅ **Giám sát webhook** (đã làm, xem trên): báo khi webhook Trello bị disable | Schedule hằng ngày | Thấp | ⭐⭐ (nên có) |
 
 **Đề xuất làm tiếp:** #1 + #2/#3 + #15. #1 chỉ là thêm 1 hàm vào node Rules. #2/#3 là lý do chính để có due date. #15 giúp phát hiện sớm khi automation ngừng chạy. Nếu board có nhiều người dùng chung thì ưu tiên #7 và #8 hơn #2/#3.

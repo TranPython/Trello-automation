@@ -159,18 +159,13 @@ Error workflow chỉ chạy với execution **production** (theo lịch hoặc w
 
 ## Bảo mật zone sau khi tắt Bot Fight Mode
 
-Trên bản Free, Bot Fight Mode không skip được theo path, nên đã phải tắt cho cả zone. Bù lại bằng:
+Trên bản Free, Bot Fight Mode không cho tạo ngoại lệ theo path, nên đã phải tắt cho cả zone. Các lớp bảo vệ còn lại:
 
-1. **Block AI bots**: *Security → Settings → Bot traffic → Block AI bots → Block on all pages*. Tính năng này chạy trên Ruleset Engine, không ảnh hưởng Trello.
-2. **Rate limiting rule** (bản Free được 1 rule): *Security → Security rules → Create rule → Rate limiting rules → Edit expression*
-
-   ```
-   (http.host ne "n8n.lanchala.org") or (http.host eq "n8n.lanchala.org" and not starts_with(http.request.uri.path, "/webhook/"))
-   ```
-
-   Characteristics: IP · 100 requests / 10 seconds · Action: Block · Duration: 10 seconds.
-3. Giữ nguyên Managed rules và Access cho các hostname khác.
-4. Đừng bật lại Bot Fight Mode, và đừng bật Browser Integrity Check cho path webhook: cả hai đều challenge Trello.
+1. **AI bot policy**: *Security → Settings → Bot traffic → Configure AI bot policies → Block on all pages*. Không ảnh hưởng Trello. AI Labyrinth giữ nguyên.
+2. **Access** đứng trước các hostname. Path webhook chỉ cho IP Trello (`104.192.142.240/28`, `2401:1d80:321c::/48`), và n8n kiểm tra chữ ký HMAC.
+3. **Cloudflare Managed Ruleset** giữ bật.
+4. **Không dùng rate limiting rule**: bản Free chỉ match được theo URI path, không theo hostname, nên rule sẽ áp cho mọi hostname (immich, windmill…) và dễ block chính người dùng. Các hostname đó đã có Access nên lợi ích thấp. Chỉ nên thêm khi có hostname public không có Access, và khi đó giới hạn đúng path đăng nhập, ví dụ `(http.request.uri.path wildcard r"/api/auth/*")`.
+5. Đừng bật lại Bot Fight Mode, và đừng bật Browser Integrity Check cho `/webhook/`: cả hai đều challenge Trello.
 
 ## Vận hành
 

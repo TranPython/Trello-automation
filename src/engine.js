@@ -4,14 +4,13 @@
 // Input items: { mode: 'event' | 'tick', now: ISO, event: {...} | null, card: {...} }
 // Output items:
 //   { kind: 'trello', method, path, body, cardId, cardName, rules }   -> Apply to Trello
-//   { kind: 'notify', subject, html, count }                          -> Send reminder
 //
 // Nguyên tắc (xem README > Bộ rule):
 //   1. Rule KHÔNG gọi API. Mỗi rule sửa "trạng thái mong muốn" (state) của card,
 //      chạy theo thứ tự ưu tiên trong CARD_RULES.
 //   2. Engine so state với card hiện tại -> 1 lệnh PUT duy nhất cho phần khác biệt.
 //      => không xung đột, idempotent, event do flow tự ghi không gây loop.
-//   3. Thêm rule = thêm 1 object vào CARD_RULES / BOARD_RULES / NOTIFY_RULES.
+//   3. Thêm rule = thêm 1 object vào CARD_RULES / BOARD_RULES.
 // =====================================================================
 
 // ------------------------------- CONFIG -------------------------------
@@ -46,18 +45,17 @@ const CFG = {
   DEFAULT_DUE: { days: 3, hour: 9, minute: 0 }, // card mới không có ngày
   TITLE_DEFAULT_TIME: { hour: 9, minute: 0 }, // "@2026/8/9" không có giờ
   CLEAR_DUE_WHEN_TAG_REMOVED: false,
-  REMINDERS: [
-    { minutes: 2 * 24 * 60, text: 'còn 2 ngày' },
-    { minutes: 24 * 60, text: 'còn 1 ngày' },
-    { minutes: 60, text: 'còn 1 giờ' },
-  ],
+  // Reminder gốc của Trello (field dueReminder, phút trước due). Trello chỉ cho 1 reminder/card,
+  // nên engine xoay vòng: luôn đặt mốc gần nhất CHƯA qua. Giá trị hợp lệ của Trello:
+  // 5, 10, 15, 60, 120, 1440, 2880.
+  REMINDER_MINUTES: [2880, 1440, 60], // 2 ngày, 1 ngày, 1 giờ
   TICK_MINUTES: 15, // phải khớp với Schedule Trigger
 };
 const L = CFG.LISTS;
 // List công việc: default due, complete -> Done, sort hằng ngày.
 const TASK_LISTS = [L.TODO, L.TOYO, L.VNK];
 const SORTED_LISTS = TASK_LISTS;
-// List "bị động": không gắn label urgency, không nhắc hạn.
+// List "bị động": không gắn label urgency, không đặt reminder.
 const PASSIVE_LISTS = [L.DONE, L.RECURRING];
 const URGENCY_LABELS = [CFG.LABELS.GREEN, CFG.LABELS.ORANGE, CFG.LABELS.RED];
 
@@ -147,6 +145,15 @@ const CARD_RULES = [
       else if (days === 2) s.labels.add(CFG.LABELS.GREEN);
     },
   },
+  {
+    id: 'native-reminder', // Luôn chạy: dueReminder = mốc gần nhất chưa qua (2 ngày -> 1 ngày -> 1 giờ)
+    when: (ctx, s) => !isPassive(s) && !!s.due && !s.dueComplete,
+    apply: (ctx, s) => {
+      const minutesLeft = toDT(s.due).diff(ctx.now, 'minutes').minutes;
+      const next = CFG.REMINDER_MINUTES.find((m) => minutesLeft > m);
+      if (next !== undefined) s.dueReminder = next; // mọi mốc đã qua (sắp tới hạn / quá hạn) -> giữ nguyên
+    },
+  },
 ];
 
 // ------------------------------ BOARD RULES ---------------------------
@@ -171,33 +178,7 @@ const BOARD_RULES = [
   },
 ];
 
-// ------------------------------ NOTIFY RULES --------------------------
-// Chạy mỗi tick. Không lưu state: 1 mốc nhắc thuộc đúng 1 tick (slot 15 phút) nên không gửi trùng.
-const NOTIFY_RULES = [
-  {
-    id: 'due-reminders', // Nhắc trước 2 ngày, 1 ngày, 1 giờ
-    when: (ctx) => ctx.mode === 'tick',
-    collect: (ctx, entries) => {
-      const slotMs = CFG.TICK_MINUTES * 60 * 1000;
-      const slot = Math.floor(ctx.now.toMillis() / slotMs);
-      const hits = [];
-      for (const { card, state } of entries) {
-        if (card.closed || isPassive(state) || !state.due || state.dueComplete) continue;
-        const due = toDT(state.due);
-        for (const r of CFG.REMINDERS) {
-          if (Math.floor(due.minus({ minutes: r.minutes }).toMillis() / slotMs) === slot) {
-            hits.push({ card, due, text: r.text });
-          }
-        }
-      }
-      return hits;
-    },
-  },
-];
-
 // -------------------------------- ENGINE ------------------------------
-const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-
 const items = $input.all().map((i) => i.json);
 if (items.length === 0) return [];
 const now = DateTime.fromISO(items[0].now ?? new Date().toISOString()).setZone(CFG.TZ);
@@ -215,6 +196,7 @@ for (const it of items) {
     dueComplete: !!card.dueComplete,
     idList: card.idList,
     pos: undefined,
+    dueReminder: card.dueReminder ?? null,
     labels: new Set(card.idLabels ?? []),
   };
   const rules = new Set();
@@ -236,6 +218,7 @@ for (const { card, state, rules } of entries) {
   if (state.dueComplete !== !!card.dueComplete) body.dueComplete = state.dueComplete;
   if (state.idList !== card.idList) body.idList = state.idList;
   if (state.pos !== undefined && state.pos !== card.pos) body.pos = state.pos;
+  if (state.dueReminder !== (card.dueReminder ?? null)) body.dueReminder = state.dueReminder;
   const oldLabels = card.idLabels ?? [];
   const newLabels = [...state.labels];
   if (newLabels.length !== oldLabels.length || newLabels.some((l) => !oldLabels.includes(l))) {
@@ -245,22 +228,4 @@ for (const { card, state, rules } of entries) {
   out.push({ json: { kind: 'trello', method: 'PUT', path: `cards/${card.id}`, body, cardId: card.id, cardName: card.name, rules: [...rules] } });
 }
 
-for (const rule of NOTIFY_RULES) {
-  if (!rule.when(baseCtx)) continue;
-  const hits = rule.collect(baseCtx, entries);
-  if (hits.length === 0) continue;
-  hits.sort((a, b) => a.due.toMillis() - b.due.toMillis());
-  const rows = hits.map((h) =>
-    `<li><b>${esc(h.text)}</b> · [${esc(CFG.LIST_NAMES[h.card.idList] ?? '?')}] ` +
-    `<a href="${esc(h.card.shortUrl ?? '')}">${esc(h.card.name)}</a> — due ${h.due.toFormat('yyyy/MM/dd HH:mm')}</li>`);
-  out.push({
-    json: {
-      kind: 'notify',
-      rule: rule.id,
-      count: hits.length,
-      subject: `⏰ Trello: ${hits.length === 1 ? `${hits[0].card.name} (${hits[0].text})` : `${hits.length} card sắp tới hạn`}`,
-      html: `<p>Nhắc hạn Trello (${now.toFormat('yyyy/MM/dd HH:mm')} JST):</p><ul>${rows.join('')}</ul>`,
-    },
-  });
-}
 return out;

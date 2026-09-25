@@ -22,8 +22,14 @@ const NOW = '2026-09-25T01:00:00.000Z';
 const jst = (s) => DateTime.fromFormat(s, 'yyyy/MM/dd HH:mm', { zone: 'Asia/Tokyo' }).toUTC().toISO();
 const card = (o = {}) => ({ id: 'c1', name: 'Việc', idList: LIST.TODO, due: null, dueComplete: false, idLabels: [], pos: 1000, closed: false, shortUrl: 'https://trello.com/c/x', ...o });
 const ev = (o = {}) => ({ type: 'updateCard', cardId: 'c1', created: false, nameChanged: false, oldName: null, dueChanged: false, completedNow: false, uncompletedNow: false, listBefore: null, listAfter: null, ...o });
-const onEvent = (c, e, now = NOW) => run('engine.js', [{ mode: 'event', now, event: ev(e), card: card(c) }]);
-const onTick = (cards, now = NOW) => run('engine.js', cards.map((c) => ({ mode: 'tick', now, event: null, card: card(c) })));
+// Các test rule khác bỏ qua dueReminder (có bộ test riêng ở cuối file)
+const stripReminder = (out) => out
+  .map((o) => { const { dueReminder, ...body } = o.body; return { ...o, body, rules: o.rules.filter((r) => r !== 'native-reminder') }; })
+  .filter((o) => Object.keys(o.body).length > 0);
+const rawEvent = (c, e, now = NOW) => run('engine.js', [{ mode: 'event', now, event: ev(e), card: card(c) }]);
+const rawTick = (cards, now = NOW) => run('engine.js', cards.map((c) => ({ mode: 'tick', now, event: null, card: card(c) })));
+const onEvent = (...a) => stripReminder(rawEvent(...a));
+const onTick = (...a) => stripReminder(rawTick(...a));
 const one = (out) => { assert.equal(out.length, 1, JSON.stringify(out)); return out[0]; };
 // Áp body lên card như Trello sẽ làm -> dùng để kiểm tra idempotent
 const applyBody = (c, body) => ({ ...card(c), ...body, due: body.due === '' ? null : body.due ?? card(c).due,
@@ -164,27 +170,33 @@ test('daily sort: đã đúng thứ tự -> không ghi; list không sort (AI) kh
   assert.deepEqual(onTick(ai, DAILY), []);
 });
 
-// ------------------------------ reminders -------------------------------
-test('nhắc hạn: 2 ngày / 1 ngày / 1 giờ, gộp 1 email mỗi tick, không trùng giữa các tick', () => {
-  const cards = [
-    { id: 'r1', name: 'Còn 2 ngày', due: jst('2026/09/27 10:10') },
-    { id: 'r2', name: 'Còn 1 giờ', due: jst('2026/09/25 11:05'), idLabels: [LB.RED] },
-    { id: 'r3', name: 'Done', idList: LIST.DONE, due: jst('2026/09/26 10:00') },
-    { id: 'r4', name: 'Complete', dueComplete: true, due: jst('2026/09/26 10:00') },
-    { id: 'r5', name: 'Chưa tới', due: jst('2026/09/26 10:20') },
+// --------------------------- native reminder ---------------------------
+const reminderOf = (out) => out.find((o) => 'dueReminder' in o.body)?.body.dueReminder;
+test('reminder Trello: xoay vòng 2 ngày -> 1 ngày -> 1 giờ theo thời gian còn lại', () => {
+  const cases = [
+    ['2026/09/28 10:00', 2880], // còn ~3 ngày
+    ['2026/09/27 09:59', 1440], // còn < 2 ngày
+    ['2026/09/26 09:59', 60], // còn < 1 ngày
   ];
-  const notes = onTick(cards).filter((o) => o.kind === 'notify');
-  assert.equal(notes.length, 1);
-  assert.equal(notes[0].count, 2);
-  assert.match(notes[0].html, /còn 1 giờ.*Còn 1 giờ.*còn 2 ngày.*Còn 2 ngày/s);
-  // tick kế tiếp (10:15): r5 (due 26/9 10:20 -> mốc 1 ngày = 25/9 10:20) mới tới
-  const next = onTick(cards, '2026-09-25T01:15:00.000Z').filter((o) => o.kind === 'notify');
-  assert.equal(next[0].count, 1);
-  assert.match(next[0].subject, /Chưa tới \(còn 1 ngày\)/);
+  for (const [due, want] of cases) assert.equal(reminderOf(rawTick([{ due: jst(due) }])), want, due);
 });
 
-test('nhắc hạn: không chạy ở event', () => {
-  assert.equal(onEvent({ due: jst('2026/09/25 11:05'), idLabels: [LB.RED] }, { dueChanged: true }).filter((o) => o.kind === 'notify').length, 0);
+test('reminder Trello: đã đúng mốc -> không ghi; mọi mốc đã qua / quá hạn -> không đụng tới', () => {
+  assert.deepEqual(rawTick([{ due: jst('2026/09/28 10:00'), dueReminder: 2880 }]), []);
+  assert.equal(reminderOf(rawTick([{ due: jst('2026/09/25 10:30'), idLabels: [LB.RED] }])), undefined); // còn 30 phút
+  assert.equal(reminderOf(rawTick([{ due: jst('2026/09/20 10:00'), idLabels: [LB.RED] }])), undefined); // quá hạn
+});
+
+test('reminder Trello: complete / Done / 繰り返し -> không đặt', () => {
+  for (const c of [{ dueComplete: true }, { idList: LIST.DONE }, { idList: LIST.RECURRING }]) {
+    assert.equal(reminderOf(rawTick([{ due: jst('2026/09/28 10:00'), ...c }])), undefined, JSON.stringify(c));
+  }
+});
+
+test('reminder Trello: card mới (default due +3 ngày) -> 2 ngày, cùng 1 lệnh PUT', () => {
+  const a = one(rawEvent({ name: 'Việc mới' }, { created: true }));
+  assert.deepEqual(a.body, { due: jst('2026/09/28 09:00'), dueReminder: 2880 });
+  assert.deepEqual(a.rules, ['default-due', 'native-reminder']);
 });
 
 // ----------------------------- idempotent -------------------------------
@@ -200,6 +212,9 @@ test('idempotent: áp kết quả rồi chạy lại -> không còn action', () 
     const after = applyBody(c, a.body);
     assert.deepEqual(onEvent(after, { dueChanged: true }), [], JSON.stringify(c));
     assert.deepEqual(onTick([after]), [], 'tick ' + JSON.stringify(c));
+    const raw = one(rawEvent(c, e));
+    const after2 = { ...applyBody(c, raw.body), dueReminder: raw.body.dueReminder ?? c.dueReminder ?? null };
+    assert.deepEqual(rawTick([after2]), [], 'raw tick ' + JSON.stringify(c));
   }
 });
 

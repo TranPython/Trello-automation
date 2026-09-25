@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const src = (f) => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8');
 const TRELLO = { trelloApi: { id: 'ZOC2kIWcaWRbHaD9', name: 'Trello Api' } };
 const BOARD_ID = '637ef8eeeb1d9a045fdcf98b';
-const CARD_FIELDS = 'id,name,idList,due,dueComplete,idLabels,pos,closed,shortUrl';
+const CARD_FIELDS = 'id,name,idList,due,dueComplete,dueReminder,idLabels,pos,closed,shortUrl';
 const code = (name, file, position) => ({ name, type: 'n8n-nodes-base.code', typeVersion: 2, position, parameters: { jsCode: src(file) } });
 
 const nodes = [
@@ -27,25 +27,18 @@ const nodes = [
       queryParameters: { parameters: [{ name: 'fields', value: CARD_FIELDS }] }, options: {} } },
   code('Tick context', 'tick-context.js', [660, 240]),
   code('Engine', 'engine.js', [900, 120]),
-  { name: 'Route', type: 'n8n-nodes-base.switch', typeVersion: 3.2, position: [1120, 120],
-    parameters: { mode: 'expression', numberOutputs: 2, output: "={{ $json.kind === 'notify' ? 1 : 0 }}" } },
-  { name: 'Apply to Trello', type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position: [1340, 40], credentials: TRELLO,
+  { name: 'Apply to Trello', type: 'n8n-nodes-base.httpRequest', typeVersion: 4.2, position: [1120, 120], credentials: TRELLO,
     retryOnFail: true, maxTries: 3, waitBetweenTries: 3000,
     parameters: { method: '={{ $json.method }}', url: '=https://api.trello.com/1/{{ $json.path }}',
       authentication: 'predefinedCredentialType', nodeCredentialType: 'trelloApi', sendBody: true, specifyBody: 'json',
       jsonBody: '={{ JSON.stringify($json.body) }}',
       options: { batching: { batch: { batchSize: 5, batchInterval: 1000 } } } } },
-  { name: 'Send reminder', type: 'n8n-nodes-base.gmail', typeVersion: 2.1, position: [1340, 220],
-    webhookId: '1f0f0d3e-3c55-4b8e-9b0e-6a3f0a6f2a11',
-    credentials: { gmailOAuth2: { id: '4QnrNQASnIWawPPD', name: 'Gmail account' } },
-    parameters: { resource: 'message', operation: 'send', sendTo: 'tranvanthong.hd@gmail.com',
-      subject: '={{ $json.subject }}', emailType: 'html', message: '={{ $json.html }}', options: { appendAttribution: false } } },
 ];
 const link = (a, b, idx = 0) => [a, idx, b];
 const edges = [
   link('Trello Trigger', 'Normalize event'), link('Normalize event', 'Get card'), link('Get card', 'Event context'),
   link('Event context', 'Engine'), link('Every 15 min', 'Get board cards'), link('Get board cards', 'Tick context'),
-  link('Tick context', 'Engine'), link('Engine', 'Route'), link('Route', 'Apply to Trello', 0), link('Route', 'Send reminder', 1),
+  link('Tick context', 'Engine'), link('Engine', 'Apply to Trello'),
 ];
 const connections = {};
 for (const [a, idx, b] of edges) {

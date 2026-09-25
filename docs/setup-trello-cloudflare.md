@@ -109,7 +109,7 @@ Kết quả:
 > - **Chặt**: giữ policy IP như trên và làm rule #15 (monitor webhook) để phát hiện sớm.
 > - **Thoáng**: đổi Include thành **Everyone**. Chữ ký HMAC cùng `webhookId` (UUID khó đoán) đã đủ chống giả mạo. Trade-off là n8n sẽ nhận request rác tới path đó (bị 401).
 >
-> Mình khuyên dùng **Chặt**. Chuyển sang Thoáng nếu thấy webhook bị disable do IP.
+> **Kết quả thực tế (2026-09-25)**: với policy chỉ cho `104.192.142.240/28`, request HEAD kiểm tra của Trello lúc tạo webhook vẫn bị Access trả **403** (`did not return 200 status code, got 403`). Vậy trình kiểm tra của Trello không gọi từ dải IP đã công bố. **Hãy dùng Thoáng (Include: Everyone)** cho path webhook, và bắt buộc điền OAuth Secret trong credential để n8n kiểm tra chữ ký.
 
 ### 4.2 Bot Fight Mode
 
@@ -138,6 +138,16 @@ Action: **Block**. Dán expression trực tiếp thì không phải dò menu Fie
 
 1. Activate workflow. Lúc này n8n gọi `POST /1/tokens/{token}/webhooks`, và Trello **gửi ngay một request HEAD** tới callbackURL.
    - Activate lỗi với thông báo kiểu *"URL ... did not return 200"* → request HEAD bị chặn ở Cloudflare. Kiểm tra lại path trong Access app (4.1) và Bot Fight Mode (4.2).
+   - **Lưu ý**: khi publish qua n8n MCP/API, n8n có thể báo thành công và hiện *active* dù việc đăng ký webhook đã thất bại. Cách kiểm tra chắc chắn: gọi `curl -X POST http://localhost:5678/webhook/<webhookId>/webhook` từ trong container n8n. Nếu nhận `404 ... is not registered` thì Trigger chưa được đăng ký.
+   - Muốn biết Trello nhận status code gì thì gọi thử API tạo webhook với cùng callbackURL:
+     ```bash
+     curl -s -X POST "https://api.trello.com/1/webhooks?key=$TRELLO_KEY&token=$TRELLO_TOKEN" \
+       --data-urlencode "callbackURL=https://n8n.example.com/webhook/<webhookId>/webhook" \
+       --data-urlencode "idModel=<boardId>"
+     # {"message":"URL (...) did not return 200 status code, got 403"} -> bị Cloudflare chặn
+     # got 404 -> đã qua Cloudflare, chỉ là workflow chưa active (bình thường khi test bằng lệnh này)
+     # Nếu tạo thành công: xoá webhook thừa bằng DELETE /1/webhooks/{id}
+     ```
 2. Xác nhận webhook đã đăng ký và đang active:
 
    ```bash

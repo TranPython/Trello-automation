@@ -8,6 +8,16 @@ tiêu đề rồi set **due date**.
 Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
 ```
 
+## Trạng thái triển khai
+
+| Mục | Giá trị |
+|---|---|
+| n8n workflow | `Trello automation` (`6HoYhAFzL3s1yYNA`), **active** |
+| Board | Honeys (`637ef8eeeb1d9a045fdcf98b`) |
+| Webhook | `https://n8n.lanchala.org/webhook/d576bd61-1e19-499d-948c-e51694f2b665/webhook` |
+| Cloudflare | Access app bypass (Everyone) cho path webhook; **Bot Fight Mode: OFF** (bắt buộc, xem [docs](docs/setup-trello-cloudflare.md)) |
+| Kiểm thử E2E (2026-09-25) | Tạo card `@2026/12/1 10:00` → due 10:00 JST ✅ · Đổi tên `@ 2026/12/02 @ 15:45` → due 15:45 JST ✅ · Event do flow tự ghi bị lọc (không loop) ✅ · POST không chữ ký → 401 ✅ |
+
 ## Kiến trúc
 
 ```

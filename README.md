@@ -2,7 +2,7 @@
 
 Dùng n8n thay cho Butler của Trello (bản Free hết quota chạy tự động) cho board **Honeys**.
 Một workflow duy nhất chạy toàn bộ bộ rule: set due từ tiêu đề, due mặc định, label theo hạn,
-Done/complete, 繰り返し, sort hằng ngày và email nhắc hạn.
+Done/complete, 繰り返し, sort hằng ngày và reminder gốc của Trello (2 ngày / 1 ngày / 1 giờ).
 
 ```
 Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
@@ -16,7 +16,7 @@ Họp review @2026/8/9 13:30   →   due = 2026-08-09 13:30 JST
 | Board | Honeys (`637ef8eeeb1d9a045fdcf98b`) |
 | Webhook | `https://n8n.lanchala.org/webhook/d576bd61-1e19-499d-948c-e51694f2b665/webhook` |
 | Cloudflare | Access app bypass cho path webhook, chỉ IP Trello `104.192.142.240/28` + `2401:1d80:321c::/48`; **Bot Fight Mode: OFF** (bắt buộc, xem [docs](docs/setup-trello-cloudflare.md)) |
-| Nhắc hạn | Gmail (`Gmail account`) → `tranvanthong.hd@gmail.com` |
+| Nhắc hạn | Reminder gốc của Trello (`dueReminder`), thông báo qua Trello app. Không dùng dịch vụ ngoài |
 | Báo lỗi | Cả 2 workflow đặt *Error workflow* = `Error Notify` (`BkcgU3Acs08Akk0T`, gửi email) |
 | Giám sát | `Trello webhook monitor` (`VO5Hl6x03Om7fzyS`), **active**, chạy mỗi 6 giờ (phút :17): canary E2E, xem mục [Giám sát](#giám-sát-webhook-canary) |
 
@@ -29,8 +29,8 @@ Tổng hợp từ rule Butler cũ và rule "@ngày" trong tiêu đề, chỉnh l
 | Nhóm | List | Ý nghĩa |
 |---|---|---|
 | `TASK_LISTS` | To-do, Toyo, VNK | List công việc: due mặc định, complete → Done, sort hằng ngày |
-| `PASSIVE_LISTS` | Done, 繰り返し | Không gắn label hạn, không nhắc hạn |
-| còn lại | JP new words, AI資格ロードマップ, Learn | Có label hạn + nhắc hạn, **không** bị di chuyển hay sort |
+| `PASSIVE_LISTS` | Done, 繰り返し | Không gắn label hạn, không đặt reminder |
+| còn lại | JP new words, AI資格ロードマップ, Learn | Có label hạn + reminder, **không** bị di chuyển hay sort |
 
 **Rule theo event** (chạy khi có webhook, theo thứ tự ưu tiên):
 
@@ -43,6 +43,7 @@ Tổng hợp từ rule Butler cũ và rule "@ngày" trong tiêu đề, chỉnh l
 | 5 | `done-marks-complete` | Card vào (hoặc được tạo trong) **Done** | Mark complete |
 | 6 | `reopen-on-leave-done` *(mới)* | Kéo card ra khỏi Done | Bỏ complete |
 | 7 | `urgency-labels` | **Mọi** event + mỗi 15 phút | Label theo số ngày lịch còn lại (bên dưới) |
+| 8 | `native-reminder` | **Mọi** event + mỗi 15 phút | `dueReminder` của Trello = mốc gần nhất chưa qua: **2 ngày → 1 ngày → 1 giờ** |
 
 **Label hạn** (`urgency-labels`, tính theo ngày lịch JST, automation quản lý hoàn toàn 3 màu này):
 
@@ -58,7 +59,6 @@ Tổng hợp từ rule Butler cũ và rule "@ngày" trong tiêu đề, chỉnh l
 | Rule | Khi nào | Làm gì |
 |---|---|---|
 | `daily-sort` | Tick 00:00–00:14 | Sort To-do / Toyo / VNK: due tăng dần → không due → đã complete. Card hôm nay/quá hạn tự lên đầu |
-| `due-reminders` | Mỗi tick | Email nhắc **2 ngày / 1 ngày / 1 giờ** trước due, gộp 1 email mỗi tick |
 
 ### Xử lý xung đột so với rule gốc
 
@@ -71,20 +71,19 @@ Tổng hợp từ rule Butler cũ và rule "@ngày" trong tiêu đề, chỉnh l
 | "complete → Done" + "added to Done → complete" | Hai rule kích hoạt lẫn nhau | Engine idempotent: event do flow tự ghi ra không tạo thay đổi mới |
 | "繰り返し → remove due" + rule "@ngày" | Đổi tên card 繰り返し có `@ngày` sẽ set lại due | `due-from-title` bỏ qua 繰り返し |
 | "default due in 3 days" | Card mới trong JP new words / Learn / 繰り返し không cần due; card copy đã có due | Chỉ áp dụng khi **tạo** card trong To-do/Toyo/VNK và **chưa có** due; tag `@ngày` được ưu tiên |
-| "set reminder 2d/1d/1h" | Trello chỉ có **1** reminder/card và chỉ gửi cho *member* của card (board này hầu như không gán member); comment tự mention bản thân thì không có thông báo | Gửi email qua Gmail, gộp theo tick 15 phút; mỗi mốc thuộc đúng 1 tick nên không gửi trùng |
+| "set reminder 2d/1d/1h" | Trello chỉ cho **1** reminder (`dueReminder`) mỗi card | Engine **xoay vòng**: đặt 2880 phút; khi mốc qua, tick kế tiếp (≤ 15 phút) đổi sang 1440, rồi 60. Card đã quá hạn hoặc còn < 1 giờ thì giữ nguyên, không đặt lại để tránh Trello bắn notification cho card cũ |
 
 ## Kiến trúc
 
 ```
 Trello Trigger → Normalize event → Get card → Event context ─┐
-                                                             ├→ Engine → Route ─┬→ Apply to Trello (PUT, 5 req/s)
-Every 15 min  → Get board cards → Tick context ──────────────┘                  └→ Send reminder (Gmail)
+                                                             ├→ Engine → Apply to Trello (PUT, 5 req/s)
+Every 15 min  → Get board cards → Tick context ──────────────┘
 ```
 
-- **Engine** là một Code node chứa CONFIG + 3 loại rule:
+- **Engine** là một Code node chứa CONFIG + 2 loại rule:
   - `CARD_RULES`: mỗi rule `{ id, when(ctx, state), apply(ctx, state) }`, sửa *trạng thái mong muốn* của card.
   - `BOARD_RULES`: chạy trên toàn board (ví dụ sort).
-  - `NOTIFY_RULES`: sinh thông báo.
 - Rule **không gọi API**. Engine so trạng thái mong muốn với card thật và sinh **1 lệnh PUT** cho phần khác biệt. Nhờ vậy các rule không ghi đè nhau, chạy lại bao nhiêu lần kết quả vẫn như nhau, và event do flow tự ghi ra không gây loop.
 - Mã nguồn nằm trong [`src/`](src/); `npm run build` sinh [`workflows/trello-automation.json`](workflows/trello-automation.json).
 
@@ -133,7 +132,7 @@ curl -s "https://api.trello.com/1/boards/AbCd1234?fields=id,name&key=$TRELLO_KEY
 ### 4. Import workflow
 1. n8n → *Workflows → Import from File* → chọn [`workflows/trello-automation.json`](workflows/trello-automation.json)
 2. Node **Trello Trigger**: điền Board ID vào `Model ID`, chọn credential
-3. Các node **Get card**, **Get board cards**, **Apply to Trello**: chọn cùng credential Trello; **Send reminder**: chọn credential Gmail
+3. Các node **Get card**, **Get board cards**, **Apply to Trello**: chọn cùng credential Trello
 4. **Activate** workflow. Lúc này n8n đăng ký webhook với Trello
 
 Kiểm tra webhook đã được đăng ký:
@@ -162,7 +161,7 @@ Thêm một node **Trello Trigger** cho mỗi board, nối vào **Normalize even
    ```
 
    - Đổi phạm vi list: sửa `TASK_LISTS`, `SORTED_LISTS`, `PASSIVE_LISTS`.
-   - Đổi mốc nhắc: sửa `CFG.REMINDERS`. Đổi due mặc định: sửa `CFG.DEFAULT_DUE`.
+   - Đổi mốc nhắc: sửa `CFG.REMINDER_MINUTES` (giá trị Trello chấp nhận: 5, 10, 15, 60, 120, 1440, 2880). Đổi due mặc định: sửa `CFG.DEFAULT_DUE`.
    - Rule cần event mới (ví dụ đổi member): thêm field vào `WATCHED_FIELDS` trong [`src/normalize.js`](src/normalize.js).
 2. Viết test trong [`tests/engine.test.js`](tests/engine.test.js), rồi chạy `npm test`.
 3. Chạy `npm run build`, rồi dán code vào node tương ứng trên n8n (hoặc nhờ Claude deploy qua n8n MCP). Nhớ **Publish**.
@@ -176,7 +175,7 @@ Nguyên tắc để không phá vỡ tính idempotent:
 
 ```bash
 npm install
-npm test        # 25 test: từng rule, xung đột, chống loop, idempotent, sort, nhắc hạn
+npm test        # 27 test: từng rule, xung đột, chống loop, idempotent, sort, reminder
 npm run build   # src/*.js -> workflows/trello-automation.json
 ```
 
@@ -216,6 +215,12 @@ Trên bản Free, Bot Fight Mode không cho tạo ngoại lệ theo path, nên �
 - **Rate limit Trello**: 100 request / 10 giây mỗi token. Mỗi event hợp lệ tốn 1–2 request, dư sức cho quy mô cá nhân/nhóm nhỏ.
 - **Múi giờ**: parse theo `TZ` trong node Rules (Asia/Tokyo), không phụ thuộc timezone của server n8n.
 
+### Reminder của Trello đã kiểm chứng thực tế (2026-09-25)
+
+- Card **không có member, không watch** vẫn nhận `cardDueSoon`: bạn nhận reminder của mọi card trên board, nên không cần gán member.
+- Đổi `dueReminder` sau khi mốc cũ đã qua: Trello **lên lịch lại** theo giá trị mới và **không bắn bù** mốc đã qua. Vì vậy xoay vòng 2 ngày → 1 ngày → 1 giờ hoạt động đúng.
+- Thông báo đi qua Trello (app/web; email theo cài đặt notification của chính Trello). Muốn giảm email, vào *Trello → Settings → Email notifications → Never*, vẫn còn push trên app.
+
 ## Gợi ý tiếp theo
 
 **Đã làm** (xem [Bộ rule](#bộ-rule)): Done ↔ complete, nhắc hạn, label quá hạn, giám sát webhook, sort.
@@ -223,11 +228,9 @@ Trên bản Free, Bot Fight Mode không cho tạo ngoại lệ theo path, nên �
 | # | Gợi ý | Lý do | Công sức |
 |---|---|---|---|
 | 1 | **Đặt tên cho 3 label** trong Trello: 🟩 `2 ngày`, 🟧 `Ngày mai`, 🟥 `Hôm nay/Quá hạn` | Nhìn là hiểu ngay; engine dùng ID nên đổi tên không ảnh hưởng | 1 phút, làm tay |
-| 2 | **Chuyển nhắc hạn sang Telegram** | Push nhanh hơn email. Đã có credential `Telegram account`, chỉ cần chat ID | Thấp: thay node `Send reminder` |
 | 3 | **Backfill 1 lần**: card có `@ngày` trong tiêu đề nhưng due trống hoặc lệch (ví dụ "piano giáng sinh @ 2026/12/12") | Card tạo trước khi có automation | Thấp |
 | 4 | **Dọn Done**: 34 card chưa complete (dữ liệu cũ) | Rule chỉ chạy khi card được *thêm vào* Done | Thấp, 1 lần |
 | 5 | **Sort ngay khi due đổi** (không chờ 00:00) | Card mới có due gần sẽ nằm cuối list tới đêm | Trung bình |
 | 6 | **Card lặp lại** từ 繰り返し: `@every mon 9:00` → mỗi kỳ copy sang To-do với due tương ứng | 繰り返し hiện chỉ là list mẫu | Trung bình |
-| 7 | **Digest sáng 07:00**: card hôm nay + quá hạn trong 1 email/Telegram | Bổ sung cho nhắc theo từng mốc | Thấp: thêm 1 `NOTIFY_RULES` |
 | 8 | **Ngày tương đối**: `@tomorrow 10:00`, `@+3d`, `@金 15:00`, `@明日` | Gõ nhanh trên điện thoại | Trung bình: mở rộng `parseTitleDue` |
 | 9 | **Archive Done cũ** > 90 ngày | Done đang có 349 card | Thấp: thêm `BOARD_RULES` |
